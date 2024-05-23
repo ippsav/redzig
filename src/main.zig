@@ -17,7 +17,7 @@ pub fn main() !void {
     while (true) {
         const connection = try listener.accept();
 
-        try stdout.print("accepted new connection", .{});
+        try stdout.print("accepted new connection\n", .{});
         _ = try connection.stream.write("+PONG\r\n");
         connection.stream.close();
     }
