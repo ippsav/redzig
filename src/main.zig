@@ -1,6 +1,7 @@
 const std = @import("std");
 const net = std.net;
 const RespParser = @import("resp/encoding.zig").RespParser;
+const command = @import("resp/command.zig");
 const Connection = std.net.Server.Connection;
 
 pub fn handleConnection(allocator: std.mem.Allocator, connection: Connection) !void {
@@ -12,7 +13,8 @@ pub fn handleConnection(allocator: std.mem.Allocator, connection: Connection) !v
 
     while (true) {
         var data = try parser.readStream(reader) orelse break;
-        _ = try connection.stream.write("+PONG\r\n");
+        try command.handleCommand(connection, data);
+
         data.deinit(allocator);
     }
 }

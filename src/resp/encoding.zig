@@ -121,7 +121,12 @@ pub const RespParser = struct {
         var buffer: [1024]u8 = undefined;
 
         while (true) {
-            const bytes_read = try reader.read(&buffer);
+            const bytes_read = reader.read(&buffer) catch |err| {
+                switch (err) {
+                    error.ConnectionResetByPeer => return null,
+                    else => return err,
+                }
+            };
             if (bytes_read == 0) break;
 
             try bytes.appendSlice(buffer[0..bytes_read]);
