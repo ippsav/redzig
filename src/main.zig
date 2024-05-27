@@ -1,10 +1,23 @@
 const std = @import("std");
 const net = std.net;
 const RespParser = @import("resp/encoding.zig").RespParser;
+const Connection = std.net.Server.Connection;
+
+pub fn handleConnection(allocator: std.mem.Allocator, connection: Connection) !void {
+    std.debug.print("connection accepted\n", .{});
+    const reader = connection.stream.reader();
+    defer connection.stream.close();
+
+    var parser = RespParser.init(allocator);
+
+    while (true) {
+        var data = try parser.readStream(reader) orelse break;
+        _ = try connection.stream.write("+PONG\r\n");
+        data.deinit(allocator);
+    }
+}
 
 pub fn main() !void {
-    const stdout = std.io.getStdOut().writer();
-
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -18,17 +31,6 @@ pub fn main() !void {
 
     while (true) {
         const connection = try listener.accept();
-        std.debug.print("connection accepted\n", .{});
-
-        const reader = connection.stream.reader();
-
-        var parser = RespParser.init(allocator);
-
-        while (try parser.readStream(reader)) |_| {
-            _ = try connection.stream.write("+PONG\r\n");
-        }
-
-        try stdout.print("accepted new connection\n", .{});
-        connection.stream.close();
+        _ = try std.Thread.spawn(.{}, handleConnection, .{ allocator, connection });
     }
 }

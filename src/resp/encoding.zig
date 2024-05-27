@@ -30,6 +30,19 @@ pub const RespData = union(enum) {
     double: f64,
     bigint: i128,
     errors: [][]const u8,
+
+    pub fn deinit(self: *RespData, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .bulk_string => |str| allocator.free(str),
+            .array => |array| {
+                for (array) |*resp_data| {
+                    resp_data.deinit(allocator);
+                }
+                allocator.free(array);
+            },
+            else => unreachable,
+        }
+    }
 };
 
 pub const RespParser = struct {
@@ -102,20 +115,6 @@ pub const RespParser = struct {
     }
 
     pub fn readStream(self: *Self, reader: anytype) !?RespData {
-        // var header_bytes = std.ArrayList(u8).init(self.allocator);
-        // defer header_bytes.deinit();
-        //
-        // try reader.streamUntilDelimiter(header_bytes.writer(), '\n', null);
-        //
-        // std.debug.assert(header_bytes.items.len > 0);
-        // std.debug.assert(header_bytes.items[0] == '*');
-        //
-        // const header = std.mem.trimRight(u8, header_bytes.items, "\r");
-        // std.debug.print("header: {s}\n", .{header[1..]});
-        // std.debug.print("header length: {d}\n", .{header.len});
-        //
-        // const number_of_elements = try std.fmt.parseInt(usize, header[1..], 10);
-        //
         var bytes = std.ArrayList(u8).init(self.allocator);
         defer bytes.deinit();
 
@@ -137,10 +136,56 @@ pub const RespParser = struct {
     }
 };
 
-test "RespParser" {
-    const data = "1234567890";
-    const reader = std.io.fixedBufferStream(data).reader();
+test "RespParser read stream" {
+    const data = "$4\r\nPING\r\n";
+    const allocator = std.testing.allocator;
 
-    var parser = RespParser{};
-    parser.readStream(reader);
+    var fbs = std.io.fixedBufferStream(data);
+    const reader = fbs.reader();
+
+    var parser = RespParser.init(allocator);
+
+    const parsed_stream = try parser.readStream(reader);
+    std.debug.assert(parsed_stream != null);
+
+    var resp_data = parsed_stream.?;
+
+    const expected = RespData{ .bulk_string = "PING" };
+    try std.testing.expectEqualDeep(expected, resp_data);
+
+    resp_data.deinit(allocator);
+}
+
+test "RespParser bulk string" {
+    const data = "$4\r\nPING\r\n";
+    const allocator = std.testing.allocator;
+
+    var parser = RespParser.init(allocator);
+
+    var lines = std.mem.tokenizeSequence(u8, data, "\r\n");
+
+    var resp_data = try parser.parseBulkString(&lines);
+
+    const expected = RespData{ .bulk_string = "PING" };
+    try std.testing.expectEqualDeep(expected, resp_data);
+
+    resp_data.deinit(allocator);
+}
+
+test "RespParser array" {
+    const data = "*1\r\n$4\r\nPING\r\n";
+    const allocator = std.testing.allocator;
+
+    var parser = RespParser.init(allocator);
+
+    var lines = std.mem.tokenizeSequence(u8, data, "\r\n");
+
+    var resp_data = try parser.parseArray(&lines);
+
+    var array = [_]RespData{RespData{ .bulk_string = "PING" }};
+
+    const expected = RespData{ .array = &array };
+    try std.testing.expectEqualDeep(expected, resp_data);
+
+    resp_data.deinit(allocator);
 }
