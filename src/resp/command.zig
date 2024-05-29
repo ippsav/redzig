@@ -2,9 +2,9 @@ const std = @import("std");
 const RespData = @import("./encoding.zig").RespData;
 const Connection = std.net.Server.Connection;
 
-const Command = enum { ping, echo };
+pub const Command = enum { ping, echo, set, get };
 
-fn getCommandEnum(command: []const u8) ?Command {
+pub fn getCommandEnum(command: []const u8) ?Command {
     const fields = std.meta.fields(Command);
 
     inline for (fields) |field| {
@@ -40,5 +40,6 @@ pub fn handleCommand(connection: Connection, parsed_data: RespData) !void {
     switch (command_enum) {
         .ping => try handlePingCommand(connection, parsed_data),
         .echo => try handleEchoCommand(connection, parsed_data),
+        else => unreachable,
     }
 }

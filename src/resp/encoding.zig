@@ -43,6 +43,47 @@ pub const RespData = union(enum) {
             else => unreachable,
         }
     }
+
+    pub fn format(self: RespData, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        switch (self) {
+            .string => {
+                try writer.print("string: {s}", .{self.string});
+            },
+            .@"error" => {
+                try writer.print("error: {s}", .{self.@"error"});
+            },
+            .integer => {
+                try writer.print("integer: {d}", .{self.integer});
+            },
+            .bulk_string => {
+                try writer.print("bulk_string: {s}", .{self.bulk_string});
+            },
+            .array => {
+                try writer.print("array:\n", .{});
+                for (self.array) |resp_data| {
+                    try writer.print("  {}\n", .{resp_data});
+                }
+            },
+            .null => {
+                try writer.print("null", .{});
+            },
+            .boolean => {
+                try writer.print("boolean: {any}", .{self.boolean});
+            },
+            .double => {
+                try writer.print("double: {d}", .{self.double});
+            },
+            .bigint => {
+                try writer.print("bigint: {d}", .{self.bigint});
+            },
+            .errors => {
+                try writer.print("errors:\n", .{});
+                for (self.errors) |err| {
+                    try writer.print("  {s}", .{err});
+                }
+            },
+        }
+    }
 };
 
 pub const RespParser = struct {
