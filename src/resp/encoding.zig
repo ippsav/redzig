@@ -31,6 +31,24 @@ pub const RespData = union(enum) {
     bigint: i128,
     errors: [][]const u8,
 
+    pub fn dupe(allocator: std.mem.Allocator, in: RespData, out: *RespData) !void {
+        switch (in) {
+            .bulk_string => |str| {
+                std.debug.print("str: {s}, len: {d}\n", .{ str, str.len });
+                out.* = .{ .bulk_string = try allocator.dupe(u8, str) };
+            },
+            .array => |array| {
+                const new_array = try allocator.alloc(RespData, array.len);
+
+                for (array, new_array) |val, *new| {
+                    try dupe(allocator, val, new);
+                }
+                out.* = .{ .array = new_array };
+            },
+            else => unreachable,
+        }
+    }
+
     pub fn deinit(self: *RespData, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .bulk_string => |str| allocator.free(str),

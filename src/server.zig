@@ -5,15 +5,63 @@ const RespParser = @import("resp/encoding.zig").RespParser;
 const command = @import("resp/command.zig");
 const RWMutex = std.Thread.RwLock;
 
+pub const Store = struct {
+    allocator: std.mem.Allocator,
+    map: std.StringHashMapUnmanaged(RespData),
+    mutex: RWMutex = .{},
+
+    pub fn init(allocator: std.mem.Allocator) Store {
+        return Store{ .map = std.StringHashMapUnmanaged(RespData){}, .allocator = allocator };
+    }
+
+    pub fn deinit(self: *Store) void {
+        var entry_it = self.map.iterator();
+
+        while (entry_it.next()) |entry| {
+            std.debug.print("bad", .{});
+            std.debug.print("{s}: {s}\n", .{ entry.key_ptr.*, entry.value_ptr.*.bulk_string });
+            self.allocator.free(entry.key_ptr.*);
+            entry.value_ptr.*.deinit(self.allocator);
+        }
+        self.map.deinit(self.allocator);
+    }
+
+    pub fn put(self: *Store, key: []const u8, value: RespData) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const v = try self.allocator.create(RespData);
+
+        try RespData.dupe(self.allocator, value, v);
+
+        const res = try self.map.getOrPut(self.allocator, key);
+
+        if (!res.found_existing) {
+            const k = try self.allocator.dupe(u8, key);
+            res.key_ptr.* = k;
+        }
+
+        res.value_ptr.* = v.*;
+    }
+
+    pub fn debug(self: *Store) void {
+        var entry_it = self.map.iterator();
+
+        while (entry_it.next()) |entry| {
+            std.debug.print("{s}: {s}\n", .{ entry.key_ptr.*, entry.value_ptr.*.bulk_string });
+        }
+    }
+};
+
 pub const Server = struct {
     allocator: std.mem.Allocator,
-    store: std.StringHashMap(RespData),
+    store: Store,
     address: std.net.Address,
 
-    pub fn init(allocator: std.mem.Allocator, host: []const u8, port: u16) !Server {
+    pub fn init(allocator: std.mem.Allocator, store: Store, host: []const u8, port: u16) !Server {
         const address = try std.net.Address.resolveIp(host, port);
 
-        return .{ .allocator = allocator, .store = std.StringHashMap(RespData).init(allocator), .address = address };
+        return .{ .allocator = allocator, .store = store, .address = address };
     }
 
     pub fn start(self: *Server) !void {
@@ -22,9 +70,15 @@ pub const Server = struct {
         });
         defer listener.deinit();
 
+        var i: u64 = 0;
         while (true) {
             const connection = try listener.accept();
-            _ = try std.Thread.spawn(.{}, handleConnection, .{ self, connection });
+            i += 1;
+            const thread = try std.Thread.spawn(.{}, handleConnection, .{ self, connection });
+            thread.join();
+            if (i >= 3) {
+                break;
+            }
         }
     }
 
@@ -55,16 +109,17 @@ pub const Server = struct {
         }
     }
 
-    fn handleSetCommand(_: *Server, connection: Connection, parsed_data: RespData) !void {
-        // if (parsed_data.array.len == 1) {
-        //     _ = try connection.stream.write("+PONG\r\n");
-        //     return;
-        // }
-        // const str = parsed_data.array[1].bulk_string;
-        // std.debug.print("ECHO: {s}\n", .{str});
-        // try std.fmt.format(connection.stream.writer(), "${d}\r\n{s}\r\n", .{ str.len, str });
-        _ = connection;
-        std.debug.print("{}", .{parsed_data});
+    fn handleSetCommand(self: *Server, connection: Connection, parsed_data: RespData) !void {
+        const key = parsed_data.array[1].bulk_string;
+        const value = parsed_data.array[2];
+
+        std.debug.print("str: {s}, len: {d}\n", .{ key, key.len });
+
+        try self.store.put(key, value);
+        self.store.debug();
+
+        try std.fmt.format(connection.stream.writer(), "$2\r\nOK\r\n", .{});
+        std.debug.print("unlock\n", .{});
     }
 
     fn handlePingCommand(_: *Server, connection: Connection, parsed_data: RespData) !void {
@@ -72,6 +127,7 @@ pub const Server = struct {
             _ = try connection.stream.write("+PONG\r\n");
             return;
         }
+
         const str = parsed_data.array[1].bulk_string;
         std.debug.print("ECHO: {s}\n", .{str});
         try std.fmt.format(connection.stream.writer(), "${d}\r\n{s}\r\n", .{ str.len, str });
