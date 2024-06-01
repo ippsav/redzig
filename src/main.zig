@@ -16,7 +16,7 @@ pub fn main() !void {
         _ = gpa.deinit();
     }
 
-    var server = try Server.init(allocator, store, "127.0.0.1", 6379);
+    var server = try Server.init(allocator, &store, "127.0.0.1", 6379);
 
     try server.start();
 }
