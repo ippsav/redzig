@@ -159,7 +159,7 @@ pub const Server = struct {
         const key = parsed_data.array[1].bulk_string;
 
         const value = self.store.get(key) orelse {
-            try std.fmt.format(connection.stream.writer(), "_\r\n", .{});
+            try std.fmt.format(connection.stream.writer(), "$-1\r\n", .{});
             return;
         };
 
