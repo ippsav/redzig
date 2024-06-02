@@ -3,43 +3,82 @@ const RespData = @import("resp/encoding.zig").RespData;
 const Connection = std.net.Server.Connection;
 const RespParser = @import("resp/encoding.zig").RespParser;
 const command = @import("resp/command.zig");
+const utils = @import("utils.zig");
 const RWMutex = std.Thread.RwLock;
+
+pub const DurationState = struct {
+    exp: i64,
+    created_at: i64,
+};
+
+pub const SetOptionalParams = enum { ex, px };
 
 pub const Store = struct {
     allocator: std.mem.Allocator,
-    map: std.StringHashMapUnmanaged(RespData),
+    cache_map: std.StringHashMapUnmanaged(RespData),
+    expiration_map: std.StringHashMapUnmanaged(DurationState),
     mutex: RWMutex = .{},
 
     pub fn init(allocator: std.mem.Allocator) Store {
-        return Store{ .map = std.StringHashMapUnmanaged(RespData){}, .allocator = allocator };
+        return Store{ .cache_map = std.StringHashMapUnmanaged(RespData){}, .expiration_map = std.StringHashMapUnmanaged(DurationState){}, .allocator = allocator };
     }
 
     pub fn deinit(self: *Store) void {
-        var entry_it = self.map.iterator();
+        var entry_it = self.cache_map.iterator();
 
         while (entry_it.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
             entry.value_ptr.deinit(self.allocator);
         }
-        self.map.deinit(self.allocator);
+        self.cache_map.deinit(self.allocator);
+        self.expiration_map.deinit(self.allocator);
     }
 
     pub fn get(self: *Store, key: []const u8) ?RespData {
         self.mutex.lockShared();
-        defer self.mutex.unlockShared();
 
-        return self.map.get(key);
+        const entry = self.cache_map.getEntry(key) orelse {
+            self.mutex.unlockShared();
+            return null;
+        };
+        const exp_state = self.expiration_map.get(key);
+
+        if (exp_state) |state| {
+            if (state.exp < std.time.milliTimestamp() - state.created_at) {
+                self.mutex.unlockShared();
+                self.mutex.lock();
+
+                // store pointer to string to clear it
+                const str_to_clear = entry.key_ptr.*;
+
+                _ = self.expiration_map.remove(key);
+                entry.value_ptr.deinit(self.allocator);
+                _ = self.cache_map.remove(key);
+
+                self.allocator.free(str_to_clear);
+
+                self.mutex.unlock();
+                return null;
+            }
+        }
+
+        self.mutex.unlockShared();
+        return entry.value_ptr.*;
     }
 
-    pub fn put(self: *Store, key: []const u8, value: RespData) !void {
+    pub fn put(self: *Store, key: []const u8, value: RespData, expiration_ms: ?i64) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        const res = try self.map.getOrPut(self.allocator, key);
+        const res = try self.cache_map.getOrPut(self.allocator, key);
 
         if (!res.found_existing) {
             const k = try self.allocator.dupe(u8, key);
             res.key_ptr.* = k;
+            if (expiration_ms) |duration| {
+                const state = DurationState{ .exp = duration, .created_at = std.time.milliTimestamp() };
+                try self.expiration_map.put(self.allocator, k, state);
+            }
         } else {
             res.value_ptr.deinit(self.allocator);
         }
@@ -48,7 +87,7 @@ pub const Store = struct {
     }
 
     pub fn debug(self: *Store) void {
-        var entry_it = self.map.iterator();
+        var entry_it = self.cache_map.iterator();
 
         while (entry_it.next()) |entry| {
             std.debug.print("{s}: {s}\n", .{ entry.key_ptr.*, entry.value_ptr.*.bulk_string });
@@ -79,6 +118,16 @@ pub const Server = struct {
         }
     }
 
+    // pub fn startExpirationWorker(self: *Server) !void {
+    //     std.Thread.spawn(.{}, handleExpiration, .{self}) catch unreachable;
+    // }
+    //
+    // fn handleExpiration(self: *Server) !void {
+    //     while (true) {
+    //         std.time.sleep(std.time.ns_per_ms * 100);
+    //     }
+    // }
+
     fn handleConnection(server: *Server, connection: Connection) !void {
         std.debug.print("connection accepted\n", .{});
         const reader = connection.stream.reader();
@@ -96,7 +145,7 @@ pub const Server = struct {
 
     pub fn handleCommand(self: *Server, connection: Connection, data: RespData) !void {
         const cmd_str = data.array[0].bulk_string;
-        const cmd = command.getCommandEnum(cmd_str).?;
+        const cmd = utils.getEnumIgnoreCase(command.Command, cmd_str).?;
 
         switch (cmd) {
             .ping => try self.handlePingCommand(connection, data),
@@ -120,10 +169,56 @@ pub const Server = struct {
     }
 
     fn handleSetCommand(self: *Server, connection: Connection, parsed_data: RespData) !void {
-        const key = parsed_data.array[1].bulk_string;
-        const value = parsed_data.array[2];
+        const ParsingSetCommandStep = enum { key, value, expiry };
 
-        try self.store.put(key, value);
+        var step: ParsingSetCommandStep = .key;
+
+        var key: []const u8 = undefined;
+        var value: RespData = undefined;
+
+        var opt_param_enum: ?SetOptionalParams = null;
+
+        var expiration_ms: ?i64 = null;
+
+        if (parsed_data.array.len < 3) return error.InvalidCommand;
+
+        var i: usize = 1;
+        while (i < parsed_data.array.len) : (i += 1) {
+            const arg = parsed_data.array[i];
+
+            if (i >= 3 and i % 2 != 0) {
+                opt_param_enum = utils.getEnumIgnoreCase(SetOptionalParams, arg.bulk_string) orelse return error.InvalidOptionalParam;
+                switch (opt_param_enum.?) {
+                    .ex => {
+                        std.debug.assert(expiration_ms == null);
+                        step = .expiry;
+                    },
+                    .px => {
+                        std.debug.assert(expiration_ms == null);
+                        step = .expiry;
+                    },
+                }
+            }
+            switch (step) {
+                .key => {
+                    key = arg.bulk_string;
+                    step = .value;
+                },
+                .value => {
+                    value = arg;
+                },
+                .expiry => {
+                    i += 1;
+                    const expiration_arg = parsed_data.array[i];
+                    expiration_ms = try std.fmt.parseInt(i64, expiration_arg.bulk_string, 10);
+                    if (opt_param_enum == .ex) {
+                        expiration_ms = expiration_ms.? * 1000;
+                    }
+                },
+            }
+        }
+
+        try self.store.put(key, value, expiration_ms);
         self.store.debug();
 
         try std.fmt.format(connection.stream.writer(), "$2\r\nOK\r\n", .{});
