@@ -35,19 +35,16 @@ pub const Store = struct {
     }
 
     pub fn get(self: *Store, key: []const u8) ?RespData {
-        self.mutex.lockShared();
+        self.mutex.lock();
+        defer self.mutex.unlock();
 
         const entry = self.cache_map.getEntry(key) orelse {
-            self.mutex.unlockShared();
             return null;
         };
         const exp_state = self.expiration_map.get(key);
 
         if (exp_state) |state| {
             if (state.exp < std.time.milliTimestamp() - state.created_at) {
-                self.mutex.unlockShared();
-                self.mutex.lock();
-
                 // store pointer to string to clear it
                 const str_to_clear = entry.key_ptr.*;
 
@@ -57,13 +54,35 @@ pub const Store = struct {
 
                 self.allocator.free(str_to_clear);
 
-                self.mutex.unlock();
                 return null;
             }
         }
 
-        self.mutex.unlockShared();
         return entry.value_ptr.*;
+    }
+
+    pub fn clearBatchOfExpiredEntries(self: *Store, comptime number_of_entries: usize) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var entry_it = self.expiration_map.iterator();
+
+        var i: usize = 0;
+        while (entry_it.next()) |exp_entry| {
+            if (i >= number_of_entries) break;
+            if (exp_entry.value_ptr.exp < std.time.milliTimestamp() - exp_entry.value_ptr.created_at) {
+                i += 1;
+                var entry = self.cache_map.fetchRemove(exp_entry.key_ptr.*).?;
+
+                // store pointer to string to clear it
+                std.debug.print("removing\n\tkey: {s}\n\t{}\n", .{ entry.key, entry.value });
+                const str_to_clear = entry.key;
+
+                _ = self.expiration_map.remove(exp_entry.key_ptr.*);
+                entry.value.deinit(self.allocator);
+                self.allocator.free(str_to_clear);
+            }
+        }
     }
 
     pub fn put(self: *Store, key: []const u8, value: RespData, expiration_ms: ?i64) !void {
@@ -118,15 +137,16 @@ pub const Server = struct {
         }
     }
 
-    // pub fn startExpirationWorker(self: *Server) !void {
-    //     std.Thread.spawn(.{}, handleExpiration, .{self}) catch unreachable;
-    // }
-    //
-    // fn handleExpiration(self: *Server) !void {
-    //     while (true) {
-    //         std.time.sleep(std.time.ns_per_ms * 100);
-    //     }
-    // }
+    pub fn startExpirationWorker(self: *Server) !void {
+        _ = try std.Thread.spawn(.{}, handleExpiration, .{self});
+    }
+
+    fn handleExpiration(self: *Server) !void {
+        while (true) {
+            std.time.sleep(std.time.ns_per_ms * 100);
+            self.store.clearBatchOfExpiredEntries(20);
+        }
+    }
 
     fn handleConnection(server: *Server, connection: Connection) !void {
         std.debug.print("connection accepted\n", .{});
@@ -189,11 +209,7 @@ pub const Server = struct {
             if (i >= 3 and i % 2 != 0) {
                 opt_param_enum = utils.getEnumIgnoreCase(SetOptionalParams, arg.bulk_string) orelse return error.InvalidOptionalParam;
                 switch (opt_param_enum.?) {
-                    .ex => {
-                        std.debug.assert(expiration_ms == null);
-                        step = .expiry;
-                    },
-                    .px => {
+                    .ex, .px => {
                         std.debug.assert(expiration_ms == null);
                         step = .expiry;
                     },
@@ -206,14 +222,17 @@ pub const Server = struct {
                 },
                 .value => {
                     value = arg;
+                    if (parsed_data.array.len == 3) break;
                 },
                 .expiry => {
                     i += 1;
+                    if (i >= parsed_data.array.len) return error.MissingExpiration;
                     const expiration_arg = parsed_data.array[i];
                     expiration_ms = try std.fmt.parseInt(i64, expiration_arg.bulk_string, 10);
                     if (opt_param_enum == .ex) {
                         expiration_ms = expiration_ms.? * 1000;
                     }
+                    step = .value; // Reset to value for further parsing if needed
                 },
             }
         }
