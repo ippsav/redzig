@@ -28,8 +28,7 @@ fn parseArgs(allocator: std.mem.Allocator, args: [][]const u8) ![]Args {
 }
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
+    const allocator = std.heap.c_allocator;
 
     var port: u16 = 6379;
 
@@ -49,7 +48,6 @@ pub fn main() !void {
     var store = Store.init(allocator);
     defer {
         store.deinit();
-        _ = gpa.deinit();
     }
 
     std.debug.print("serving on port: {d}\n", .{port});

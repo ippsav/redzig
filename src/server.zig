@@ -153,13 +153,16 @@ pub const Server = struct {
         const reader = connection.stream.reader();
         defer connection.stream.close();
 
-        var parser = RespParser.init(server.allocator);
+        var arena = std.heap.ArenaAllocator.init(server.allocator);
+        defer arena.deinit();
+        const child_allocator = arena.allocator();
+
+        var parser = RespParser.init(child_allocator);
 
         while (true) {
-            var data = try parser.readStream(reader) orelse break;
+            defer _ = arena.reset(.retain_capacity);
+            const data = try parser.readStream(reader) orelse break;
             try server.handleCommand(connection, data);
-
-            data.deinit(server.allocator);
         }
     }
 
@@ -238,7 +241,6 @@ pub const Server = struct {
         }
 
         try self.store.put(key, value, expiration_ms);
-        self.store.debug();
 
         try std.fmt.format(connection.stream.writer(), "$2\r\nOK\r\n", .{});
     }
