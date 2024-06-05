@@ -189,7 +189,7 @@ pub const Server = struct {
         switch (arg) {
             .replication => {
                 const role = @tagName(self.config.role);
-                try std.fmt.format(connection.stream.writer(), "${}\r\nrole:{}\r\n", .{ role.len + 5, role });
+                try std.fmt.format(connection.stream.writer(), "${d}\r\nrole:{s}\r\n", .{ role.len + 5, role });
                 return;
             },
         }
