@@ -9,7 +9,7 @@ const config = @import("config.zig");
 
 const Args = union(enum) {
     port: u16,
-    replicaof: []const u8,
+    replicaof: std.net.Address,
 };
 
 fn parseArgs(allocator: std.mem.Allocator, args: [][]const u8) ![]Args {
@@ -25,9 +25,35 @@ fn parseArgs(allocator: std.mem.Allocator, args: [][]const u8) ![]Args {
 
             try parsed_args.append(.{ .port = port });
         } else if (std.mem.eql(u8, arg, "--replicaof")) {
-            if (i + 1 >= args.len) return error.MissingReplicaOf;
-            const replicaof = args[i + 1];
-            try parsed_args.append(.{ .replicaof = replicaof });
+            var address: std.net.Address = undefined;
+            if (i + 2 < args.len and !std.mem.startsWith(u8, args[i + 1], "--")) {
+                const r_host = blk: {
+                    if (std.mem.eql(u8, args[i + 1], "localhost")) {
+                        break :blk "127.0.0.1";
+                    }
+                    break :blk args[i + 1];
+                };
+                const r_port = try std.fmt.parseInt(u16, args[i + 2], 10);
+
+                address = try net.Address.parseIp(r_host, r_port);
+            } else if (i + 1 < args.len) {
+                var it = std.mem.tokenize(u8, args[i + 1], " ");
+                const r_host = blk: {
+                    const h = it.next() orelse return error.InvalidReplicaOf;
+                    if (std.mem.eql(u8, h, "localhost")) {
+                        break :blk "127.0.0.1";
+                    }
+                    break :blk h;
+                };
+                const r_port_str = it.next() orelse return error.InvalidReplicaOf;
+
+                const r_port = try std.fmt.parseInt(u16, r_port_str, 10);
+
+                address = try net.Address.parseIp(r_host, r_port);
+            } else {
+                return error.MissingReplicaof;
+            }
+            try parsed_args.append(.{ .replicaof = address });
         }
     }
     return try parsed_args.toOwnedSlice();
@@ -50,19 +76,9 @@ pub fn main() !void {
             .port => |p| {
                 s_config.port = p;
             },
-            .replicaof => |r| {
-                var it = std.mem.tokenize(u8, r, " ");
-
-                const r_host = it.next() orelse return error.InvalidReplicaOf;
-                const r_port_str = it.next() orelse return error.InvalidReplicaOf;
-
-                const r_port = try std.fmt.parseInt(u16, r_port_str, 10);
-
+            .replicaof => |address| {
                 s_config.role = .slave;
-                s_config.node_config = .{ .slave = .{
-                    .port = r_port,
-                    .host = r_host,
-                } };
+                s_config.node_config = .{ .slave = .{ .address = address } };
             },
         }
     }
