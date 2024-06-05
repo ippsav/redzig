@@ -166,6 +166,19 @@ pub const Server = struct {
         }
     }
 
+    fn handleInfoCommand(_: *Server, connection: Connection, parsed_data: RespData) !void {
+        const InfoCommandArgs = enum { replication };
+
+        const arg = utils.getEnumIgnoreCase(InfoCommandArgs, parsed_data.array[1].bulk_string) orelse return error.InvalidCommand;
+
+        switch (arg) {
+            .replication => {
+                try std.fmt.format(connection.stream.writer(), "$11\r\nrole:master\r\n", .{});
+                return;
+            },
+        }
+    }
+
     pub fn handleCommand(self: *Server, connection: Connection, data: RespData) !void {
         const cmd_str = data.array[0].bulk_string;
         const cmd = utils.getEnumIgnoreCase(command.Command, cmd_str).?;
@@ -175,6 +188,7 @@ pub const Server = struct {
             .echo => try self.handleEchoCommand(connection, data),
             .set => try self.handleSetCommand(connection, data),
             .get => try self.handleGetCommand(connection, data),
+            .info => try self.handleInfoCommand(connection, data),
         }
     }
 
