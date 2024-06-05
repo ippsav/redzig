@@ -5,6 +5,7 @@ const RespParser = @import("resp/encoding.zig").RespParser;
 const command = @import("resp/command.zig");
 const utils = @import("utils.zig");
 const RWMutex = std.Thread.RwLock;
+const Config = @import("config.zig").Config;
 
 pub const DurationState = struct {
     exp: i64,
@@ -118,11 +119,12 @@ pub const Server = struct {
     allocator: std.mem.Allocator,
     store: *Store,
     address: std.net.Address,
+    config: Config,
 
-    pub fn init(allocator: std.mem.Allocator, store: *Store, host: []const u8, port: u16) !Server {
-        const address = try std.net.Address.resolveIp(host, port);
+    pub fn init(allocator: std.mem.Allocator, store: *Store, config: Config) !Server {
+        const address = try std.net.Address.resolveIp(config.host, config.port);
 
-        return .{ .allocator = allocator, .store = store, .address = address };
+        return .{ .allocator = allocator, .store = store, .address = address, .config = config };
     }
 
     pub fn start(self: *Server) !void {
@@ -166,19 +168,6 @@ pub const Server = struct {
         }
     }
 
-    fn handleInfoCommand(_: *Server, connection: Connection, parsed_data: RespData) !void {
-        const InfoCommandArgs = enum { replication };
-
-        const arg = utils.getEnumIgnoreCase(InfoCommandArgs, parsed_data.array[1].bulk_string) orelse return error.InvalidCommand;
-
-        switch (arg) {
-            .replication => {
-                try std.fmt.format(connection.stream.writer(), "$11\r\nrole:master\r\n", .{});
-                return;
-            },
-        }
-    }
-
     pub fn handleCommand(self: *Server, connection: Connection, data: RespData) !void {
         const cmd_str = data.array[0].bulk_string;
         const cmd = utils.getEnumIgnoreCase(command.Command, cmd_str).?;
@@ -189,6 +178,20 @@ pub const Server = struct {
             .set => try self.handleSetCommand(connection, data),
             .get => try self.handleGetCommand(connection, data),
             .info => try self.handleInfoCommand(connection, data),
+        }
+    }
+
+    fn handleInfoCommand(self: *Server, connection: Connection, parsed_data: RespData) !void {
+        const InfoCommandArgs = enum { replication };
+
+        const arg = utils.getEnumIgnoreCase(InfoCommandArgs, parsed_data.array[1].bulk_string) orelse return error.InvalidCommand;
+
+        switch (arg) {
+            .replication => {
+                const role = @tagName(self.config.role);
+                try std.fmt.format(connection.stream.writer(), "${}\r\nrole:{}\r\n", .{ role.len + 5, role });
+                return;
+            },
         }
     }
 
