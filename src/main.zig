@@ -77,10 +77,13 @@ pub fn main() !void {
                 s_config.port = p;
             },
             .replicaof => |address| {
-                s_config.role = .slave;
-                s_config.node_config = .{ .slave = .{ .address = address } };
+                s_config.configureSlaveNode(address);
             },
         }
+    }
+
+    if (s_config.role == .none) {
+        s_config.configureMasterNode();
     }
 
     var store = Store.init(allocator);

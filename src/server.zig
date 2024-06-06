@@ -188,9 +188,20 @@ pub const Server = struct {
 
         switch (arg) {
             .replication => {
-                const role = @tagName(self.config.role);
-                try std.fmt.format(connection.stream.writer(), "${d}\r\nrole:{s}\r\n", .{ role.len + 5, role });
-                return;
+                // const role = @tagName(self.config.role);
+                // try std.fmt.format(connection.stream.writer(), "${d}\r\nrole:{s}\r\n", .{ role.len + 5, role });
+                // return;
+                switch (self.config.node_config) {
+                    .master => |m_config| {
+                        const info = try std.fmt.allocPrint(self.allocator, "role:master\nmaster_replid:{s}\nmaster_repl_offset:{d}", .{ m_config.master_replid, m_config.master_repl_offset });
+                        defer self.allocator.free(info);
+                        try std.fmt.format(connection.stream.writer(), "${d}\r\n{s}\r\n", .{ info.len, info });
+                    },
+                    .slave => {
+                        try std.fmt.format(connection.stream.writer(), "$10\r\nrole:slave\r\n", .{});
+                    },
+                    else => unreachable,
+                }
             },
         }
     }
