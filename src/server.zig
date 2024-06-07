@@ -154,6 +154,14 @@ pub const Server = struct {
                 defer data.deinit(self.allocator);
                 std.debug.print("got data: {s}\n", .{data});
             }
+
+            try sendPsyncCommand(stream);
+            parsed_data = try parser.readStream(stream.reader()) orelse return error.InvalidPsyncResponse;
+            if (parsed_data != null) {
+                var data = parsed_data.?;
+                defer data.deinit(self.allocator);
+                std.debug.print("got data: {s}\n", .{data});
+            }
         }
 
         var listener = try self.address.listen(.{
@@ -169,6 +177,10 @@ pub const Server = struct {
 
     fn sendPingMessage(stream: std.net.Stream) !void {
         try std.fmt.format(stream.writer(), "*1\r\n$4\r\nPING\r\n", .{});
+    }
+
+    fn sendPsyncCommand(stream: std.net.Stream) !void {
+        try std.fmt.format(stream.writer(), "*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n", .{});
     }
 
     fn sendReplConfListeningPortMessage(port: u16, stream: std.net.Stream) !void {
@@ -219,7 +231,12 @@ pub const Server = struct {
             .get => try self.handleGetCommand(stream, data),
             .info => try self.handleInfoCommand(stream, data),
             .replconf => try self.handleReplconfCommand(stream, data),
+            .psync => try self.handlePsyncCommand(stream, data),
         }
+    }
+
+    fn handlePsyncCommand(server: *Server, stream: std.net.Stream, _: RespData) !void {
+        try std.fmt.format(stream.writer(), "+FULLRESYNC {s} 0\r\n", .{server.config.node_config.master.master_replid});
     }
 
     fn handleReplconfCommand(_: *Server, stream: std.net.Stream, _: RespData) !void {
