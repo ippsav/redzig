@@ -133,7 +133,22 @@ pub const Server = struct {
 
             const stream = try std.net.tcpConnectToAddress(self.config.node_config.slave.address);
             try sendPingMessage(stream);
-            const parsed_data = try parser.readStream(stream.reader());
+            var parsed_data = try parser.readStream(stream.reader());
+            if (parsed_data != null) {
+                var data = parsed_data.?;
+                defer data.deinit(self.allocator);
+                std.debug.print("got data: {s}\n", .{data});
+            }
+            try sendReplConfListeningPortMessage(self.config.port, stream);
+            parsed_data = try parser.readStream(stream.reader()) orelse return error.InvalidReplicationConfig;
+            if (parsed_data != null) {
+                var data = parsed_data.?;
+                defer data.deinit(self.allocator);
+                std.debug.print("got data: {s}\n", .{data});
+            }
+
+            try sendReplConfListeningCapaMessage(stream);
+            parsed_data = try parser.readStream(stream.reader()) orelse return error.InvalidReplicationConfig;
             if (parsed_data != null) {
                 var data = parsed_data.?;
                 defer data.deinit(self.allocator);
@@ -154,6 +169,14 @@ pub const Server = struct {
 
     fn sendPingMessage(stream: std.net.Stream) !void {
         try std.fmt.format(stream.writer(), "*1\r\n$4\r\nPING\r\n", .{});
+    }
+
+    fn sendReplConfListeningPortMessage(port: u16, stream: std.net.Stream) !void {
+        try std.fmt.format(stream.writer(), "*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$4\r\n{d}\r\n", .{port});
+    }
+
+    fn sendReplConfListeningCapaMessage(stream: std.net.Stream) !void {
+        try std.fmt.format(stream.writer(), "*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n", .{});
     }
 
     pub fn startExpirationWorker(self: *Server) !void {
@@ -195,7 +218,12 @@ pub const Server = struct {
             .set => try self.handleSetCommand(stream, data),
             .get => try self.handleGetCommand(stream, data),
             .info => try self.handleInfoCommand(stream, data),
+            .replconf => try self.handleReplconfCommand(stream, data),
         }
+    }
+
+    fn handleReplconfCommand(_: *Server, stream: std.net.Stream, _: RespData) !void {
+        _ = try stream.writer().write("+OK\r\n");
     }
 
     fn handleInfoCommand(self: *Server, stream: std.net.Stream, parsed_data: RespData) !void {
