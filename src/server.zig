@@ -162,6 +162,18 @@ pub const Server = struct {
                 defer data.deinit(self.allocator);
                 std.debug.print("got data: {s}\n", .{data});
             }
+
+            var rdb_data = std.ArrayList(u8).init(self.allocator);
+            defer rdb_data.deinit();
+            var buffer: [1024]u8 = undefined;
+            while (true) {
+                const bytes_read = try stream.reader().read(&buffer);
+                if (bytes_read == 0) break;
+                try rdb_data.appendSlice(buffer[0..bytes_read]);
+                if (bytes_read < buffer.len) break;
+            }
+
+            std.debug.print("got rdb data: {s}\n", .{rdb_data.items});
         }
 
         var listener = try self.address.listen(.{
@@ -237,6 +249,20 @@ pub const Server = struct {
 
     fn handlePsyncCommand(server: *Server, stream: std.net.Stream, _: RespData) !void {
         try std.fmt.format(stream.writer(), "+FULLRESYNC {s} 0\r\n", .{server.config.node_config.master.master_replid});
+
+        const rdb_b64 = "UkVESVMwMDEx+glyZWRpcy12ZXIFNy4yLjD6CnJlZGlzLWJpdHPAQPoFY3RpbWXCbQi8ZfoIdXNlZC1tZW3CsMQQAPoIYW9mLWJhc2XAAP/wbjv+wP9aog==";
+
+        const base64_decoder = std.base64.Base64Decoder.init(std.base64.standard.alphabet_chars, std.base64.standard.pad_char);
+
+        const len = try base64_decoder.calcSizeForSlice(rdb_b64);
+        const decoded_data = try server.allocator.alloc(u8, len);
+        defer server.allocator.free(decoded_data);
+
+        try base64_decoder.decode(decoded_data, rdb_b64);
+
+        std.debug.print("sending rdb len: {d}\n", .{len});
+
+        try std.fmt.format(stream.writer(), "${d}\r\n{s}", .{ len, decoded_data });
     }
 
     fn handleReplconfCommand(_: *Server, stream: std.net.Stream, _: RespData) !void {
