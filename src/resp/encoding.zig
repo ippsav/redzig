@@ -20,7 +20,7 @@ const U8SequenceIterator = TokenIterator(u8, .sequence);
 // Pushes           >
 
 pub const RespData = union(enum) {
-    string: []const u8,
+    simple_string: []const u8,
     @"error": []const u8,
     integer: i64,
     bulk_string: []const u8,
@@ -34,8 +34,10 @@ pub const RespData = union(enum) {
     pub fn dupe(allocator: std.mem.Allocator, in: RespData, out: *RespData) !void {
         switch (in) {
             .bulk_string => |str| {
-                std.debug.print("str: {s}, len: {d}\n", .{ str, str.len });
                 out.* = .{ .bulk_string = try allocator.dupe(u8, str) };
+            },
+            .simple_string => |str| {
+                out.* = .{ .simple_string = try allocator.dupe(u8, str) };
             },
             .array => |array| {
                 const new_array = try allocator.alloc(RespData, array.len);
@@ -52,6 +54,7 @@ pub const RespData = union(enum) {
     pub fn deinit(self: *RespData, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .bulk_string => |str| allocator.free(str),
+            .simple_string => |str| allocator.free(str),
             .array => |array| {
                 for (array) |*resp_data| {
                     resp_data.deinit(allocator);
@@ -64,8 +67,8 @@ pub const RespData = union(enum) {
 
     pub fn format(self: RespData, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
         switch (self) {
-            .string => {
-                try writer.print("string: {s}", .{self.string});
+            .simple_string => {
+                try writer.print("string: {s}", .{self.simple_string});
             },
             .@"error" => {
                 try writer.print("error: {s}", .{self.@"error"});
@@ -148,6 +151,8 @@ pub const RespParser = struct {
         const length_line = lines.next().?;
         const length = try std.fmt.parseInt(usize, length_line[1..], 10);
 
+        if (length == 0) return .{ .bulk_string = "" };
+
         const resp_string = try self.allocator.alloc(u8, length);
 
         const string_line = lines.next().?;
@@ -155,6 +160,18 @@ pub const RespParser = struct {
 
         return .{
             .bulk_string = resp_string,
+        };
+    }
+
+    pub fn parseSimpleString(self: *Self, lines: *U8SequenceIterator) !RespData {
+        const line = lines.next().?;
+
+        const resp_string = try self.allocator.alloc(u8, line.len - 1);
+
+        @memcpy(resp_string, line[1..]);
+
+        return .{
+            .simple_string = resp_string,
         };
     }
 
@@ -166,6 +183,9 @@ pub const RespParser = struct {
             },
             '$' => {
                 return try self.parseBulkString(lines);
+            },
+            '+' => {
+                return try self.parseSimpleString(lines);
             },
             else => {
                 return .null;

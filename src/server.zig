@@ -128,6 +128,19 @@ pub const Server = struct {
     }
 
     pub fn start(self: *Server) !void {
+        if (self.config.role == .slave) {
+            var parser = RespParser.init(self.allocator);
+
+            const stream = try std.net.tcpConnectToAddress(self.config.node_config.slave.address);
+            try sendPingMessage(stream);
+            const parsed_data = try parser.readStream(stream.reader());
+            if (parsed_data != null) {
+                var data = parsed_data.?;
+                defer data.deinit(self.allocator);
+                std.debug.print("got data: {s}\n", .{data});
+            }
+        }
+
         var listener = try self.address.listen(.{
             .reuse_address = true,
         });
@@ -137,6 +150,10 @@ pub const Server = struct {
             const connection = try listener.accept();
             _ = try std.Thread.spawn(.{}, handleConnection, .{ self, connection });
         }
+    }
+
+    fn sendPingMessage(stream: std.net.Stream) !void {
+        try std.fmt.format(stream.writer(), "*1\r\n$4\r\nPING\r\n", .{});
     }
 
     pub fn startExpirationWorker(self: *Server) !void {
@@ -164,41 +181,38 @@ pub const Server = struct {
         while (true) {
             defer _ = arena.reset(.retain_capacity);
             const data = try parser.readStream(reader) orelse break;
-            try server.handleCommand(connection, data);
+            try server.handleCommand(connection.stream, data);
         }
     }
 
-    pub fn handleCommand(self: *Server, connection: Connection, data: RespData) !void {
+    pub fn handleCommand(self: *Server, stream: std.net.Stream, data: RespData) !void {
         const cmd_str = data.array[0].bulk_string;
         const cmd = utils.getEnumIgnoreCase(command.Command, cmd_str).?;
 
         switch (cmd) {
-            .ping => try self.handlePingCommand(connection, data),
-            .echo => try self.handleEchoCommand(connection, data),
-            .set => try self.handleSetCommand(connection, data),
-            .get => try self.handleGetCommand(connection, data),
-            .info => try self.handleInfoCommand(connection, data),
+            .ping => try self.handlePingCommand(stream, data),
+            .echo => try self.handleEchoCommand(stream, data),
+            .set => try self.handleSetCommand(stream, data),
+            .get => try self.handleGetCommand(stream, data),
+            .info => try self.handleInfoCommand(stream, data),
         }
     }
 
-    fn handleInfoCommand(self: *Server, connection: Connection, parsed_data: RespData) !void {
+    fn handleInfoCommand(self: *Server, stream: std.net.Stream, parsed_data: RespData) !void {
         const InfoCommandArgs = enum { replication };
 
         const arg = utils.getEnumIgnoreCase(InfoCommandArgs, parsed_data.array[1].bulk_string) orelse return error.InvalidCommand;
 
         switch (arg) {
             .replication => {
-                // const role = @tagName(self.config.role);
-                // try std.fmt.format(connection.stream.writer(), "${d}\r\nrole:{s}\r\n", .{ role.len + 5, role });
-                // return;
                 switch (self.config.node_config) {
                     .master => |m_config| {
                         const info = try std.fmt.allocPrint(self.allocator, "role:master\nmaster_replid:{s}\nmaster_repl_offset:{d}", .{ m_config.master_replid, m_config.master_repl_offset });
                         defer self.allocator.free(info);
-                        try std.fmt.format(connection.stream.writer(), "${d}\r\n{s}\r\n", .{ info.len, info });
+                        try std.fmt.format(stream.writer(), "${d}\r\n{s}\r\n", .{ info.len, info });
                     },
                     .slave => {
-                        try std.fmt.format(connection.stream.writer(), "$10\r\nrole:slave\r\n", .{});
+                        try std.fmt.format(stream.writer(), "$10\r\nrole:slave\r\n", .{});
                     },
                     else => unreachable,
                 }
@@ -206,20 +220,20 @@ pub const Server = struct {
         }
     }
 
-    fn handleGetCommand(self: *Server, connection: Connection, parsed_data: RespData) !void {
+    fn handleGetCommand(self: *Server, stream: std.net.Stream, parsed_data: RespData) !void {
         const key = parsed_data.array[1].bulk_string;
 
         const value = self.store.get(key) orelse {
-            try std.fmt.format(connection.stream.writer(), "$-1\r\n", .{});
+            try std.fmt.format(stream.writer(), "$-1\r\n", .{});
             return;
         };
 
         std.debug.assert(value == .bulk_string);
 
-        try std.fmt.format(connection.stream.writer(), "${d}\r\n{s}\r\n", .{ value.bulk_string.len, value.bulk_string });
+        try std.fmt.format(stream.writer(), "${d}\r\n{s}\r\n", .{ value.bulk_string.len, value.bulk_string });
     }
 
-    fn handleSetCommand(self: *Server, connection: Connection, parsed_data: RespData) !void {
+    fn handleSetCommand(self: *Server, stream: std.net.Stream, parsed_data: RespData) !void {
         const ParsingSetCommandStep = enum { key, value, expiry };
 
         var step: ParsingSetCommandStep = .key;
@@ -270,23 +284,25 @@ pub const Server = struct {
 
         try self.store.put(key, value, expiration_ms);
 
-        try std.fmt.format(connection.stream.writer(), "$2\r\nOK\r\n", .{});
+        try std.fmt.format(stream.writer(), "$2\r\nOK\r\n", .{});
     }
 
-    fn handlePingCommand(_: *Server, connection: Connection, parsed_data: RespData) !void {
+    fn handlePingCommand(_: *Server, stream: std.net.Stream, parsed_data: RespData) !void {
         if (parsed_data.array.len == 1) {
-            _ = try connection.stream.write("+PONG\r\n");
+            _ = try stream.write("+PONG\r\n");
             return;
         }
 
+        for (parsed_data.array) |arg| {
+            std.debug.print("{arg}\n", .{arg});
+        }
+
         const str = parsed_data.array[1].bulk_string;
-        std.debug.print("ECHO: {s}\n", .{str});
-        try std.fmt.format(connection.stream.writer(), "${d}\r\n{s}\r\n", .{ str.len, str });
+        try std.fmt.format(stream.writer(), "${d}\r\n{s}\r\n", .{ str.len, str });
     }
 
-    fn handleEchoCommand(_: *Server, connection: Connection, parsed_data: RespData) !void {
+    fn handleEchoCommand(_: *Server, stream: std.net.Stream, parsed_data: RespData) !void {
         const str = parsed_data.array[1].bulk_string;
-        std.debug.print("ECHO: {s}\n", .{str});
-        try std.fmt.format(connection.stream.writer(), "${d}\r\n{s}\r\n", .{ str.len, str });
+        try std.fmt.format(stream.writer(), "${d}\r\n{s}\r\n", .{ str.len, str });
     }
 };
