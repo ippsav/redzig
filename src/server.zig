@@ -291,6 +291,8 @@ pub const Server = struct {
     }
 
     fn handleGetCommand(self: *Server, stream: std.net.Stream, parsed_data: RespData) !void {
+        std.debug.assert(parsed_data.array.len == 2);
+
         const key = parsed_data.array[1].bulk_string;
 
         const value = self.store.get(key) orelse {
