@@ -8,6 +8,7 @@ const RWMutex = std.Thread.RwLock;
 const Config = @import("config.zig").Config;
 const set = @import("commands/set.zig");
 const echo = @import("commands/echo.zig");
+const info = @import("commands/info.zig");
 
 pub const DurationState = struct {
     exp: i64,
@@ -270,24 +271,10 @@ pub const Server = struct {
     }
 
     fn handleInfoCommand(self: *Server, stream: std.net.Stream, parsed_data: RespData) !void {
-        const InfoCommandArgs = enum { replication };
-
-        const arg = utils.getEnumIgnoreCase(InfoCommandArgs, parsed_data.array[1].bulk_string) orelse return error.InvalidCommand;
+        const arg = utils.getEnumIgnoreCase(info.InfoCommandArgs, parsed_data.array[1].bulk_string) orelse return error.InvalidCommand;
 
         switch (arg) {
-            .replication => {
-                switch (self.config.node_config) {
-                    .master => |m_config| {
-                        const info = try std.fmt.allocPrint(self.allocator, "role:master\nmaster_replid:{s}\nmaster_repl_offset:{d}", .{ m_config.master_replid, m_config.master_repl_offset });
-                        defer self.allocator.free(info);
-                        try std.fmt.format(stream.writer(), "${d}\r\n{s}\r\n", .{ info.len, info });
-                    },
-                    .slave => {
-                        try std.fmt.format(stream.writer(), "$10\r\nrole:slave\r\n", .{});
-                    },
-                    else => unreachable,
-                }
-            },
+            .replication => try info.handleInfoReplication(self.allocator, stream.writer().any(), self.config),
         }
     }
 
