@@ -6,13 +6,12 @@ const command = @import("resp/command.zig");
 const utils = @import("utils.zig");
 const RWMutex = std.Thread.RwLock;
 const Config = @import("config.zig").Config;
+const set = @import("commands/set.zig");
 
 pub const DurationState = struct {
     exp: i64,
     created_at: i64,
 };
-
-pub const SetOptionalParams = enum { ex, px };
 
 pub const Store = struct {
     allocator: std.mem.Allocator,
@@ -305,55 +304,9 @@ pub const Server = struct {
     }
 
     fn handleSetCommand(self: *Server, stream: std.net.Stream, parsed_data: RespData) !void {
-        const ParsingSetCommandStep = enum { key, value, expiry };
+        const set_cmd_val = try set.parseSetCommand(parsed_data);
 
-        var step: ParsingSetCommandStep = .key;
-
-        var key: []const u8 = undefined;
-        var value: RespData = undefined;
-
-        var opt_param_enum: ?SetOptionalParams = null;
-
-        var expiration_ms: ?i64 = null;
-
-        if (parsed_data.array.len < 3) return error.InvalidCommand;
-
-        var i: usize = 1;
-        while (i < parsed_data.array.len) : (i += 1) {
-            const arg = parsed_data.array[i];
-
-            if (i >= 3 and i % 2 != 0) {
-                opt_param_enum = utils.getEnumIgnoreCase(SetOptionalParams, arg.bulk_string) orelse return error.InvalidOptionalParam;
-                switch (opt_param_enum.?) {
-                    .ex, .px => {
-                        std.debug.assert(expiration_ms == null);
-                        step = .expiry;
-                    },
-                }
-            }
-            switch (step) {
-                .key => {
-                    key = arg.bulk_string;
-                    step = .value;
-                },
-                .value => {
-                    value = arg;
-                    if (parsed_data.array.len == 3) break;
-                },
-                .expiry => {
-                    i += 1;
-                    if (i >= parsed_data.array.len) return error.MissingExpiration;
-                    const expiration_arg = parsed_data.array[i];
-                    expiration_ms = try std.fmt.parseInt(i64, expiration_arg.bulk_string, 10);
-                    if (opt_param_enum == .ex) {
-                        expiration_ms = expiration_ms.? * 1000;
-                    }
-                    step = .value; // Reset to value for further parsing if needed
-                },
-            }
-        }
-
-        try self.store.put(key, value, expiration_ms);
+        try self.store.put(set_cmd_val.key, set_cmd_val.value, set_cmd_val.expiration_ms);
 
         try std.fmt.format(stream.writer(), "$2\r\nOK\r\n", .{});
     }
@@ -362,10 +315,6 @@ pub const Server = struct {
         if (parsed_data.array.len == 1) {
             _ = try stream.write("+PONG\r\n");
             return;
-        }
-
-        for (parsed_data.array) |arg| {
-            std.debug.print("{arg}\n", .{arg});
         }
 
         const str = parsed_data.array[1].bulk_string;
