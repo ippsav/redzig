@@ -7,6 +7,7 @@ const utils = @import("utils.zig");
 const RWMutex = std.Thread.RwLock;
 const Config = @import("config.zig").Config;
 const set = @import("commands/set.zig");
+const echo = @import("commands/echo.zig");
 
 pub const DurationState = struct {
     exp: i64,
@@ -319,12 +320,11 @@ pub const Server = struct {
             return;
         }
 
-        const str = parsed_data.array[1].bulk_string;
-        try std.fmt.format(stream.writer(), "${d}\r\n{s}\r\n", .{ str.len, str });
+        try echo.echoValue(stream.writer().any(), parsed_data.array[1]);
     }
 
     fn handleEchoCommand(_: *Server, stream: std.net.Stream, parsed_data: RespData) !void {
-        const str = parsed_data.array[1].bulk_string;
-        try std.fmt.format(stream.writer(), "${d}\r\n{s}\r\n", .{ str.len, str });
+        std.debug.assert(parsed_data.array.len == 2);
+        try echo.echoValue(stream.writer().any(), parsed_data.array[1]);
     }
 };
